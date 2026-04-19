@@ -1,4 +1,4 @@
-# The Koye Method
+# The Method
 
 An ML-gated mean-reversion grid trader for high-volatility equities.
 
