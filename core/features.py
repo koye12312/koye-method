@@ -95,7 +95,10 @@ def return_kurtosis(close: pd.Series, window: int = 48) -> pd.Series:
 
 
 def hurst_exponent(close: pd.Series, window: int = 100) -> pd.Series:
-    """Hurst exponent over a rolling window via the rescaled-range (R/S) method.
+    """Hurst exponent over a rolling window, estimated from how the spread of
+    log-price changes grows with the lag: std(p[t+lag] - p[t]) ~ lag^H, so H
+    is the slope of log(std) against log(lag). (This is the lagged-difference
+    / variance-scaling estimator, not classical rescaled-range R/S analysis.)
 
     Interpretation:
       H < 0.5  -> mean-reverting series
@@ -125,6 +128,23 @@ def hurst_exponent(close: pd.Series, window: int = 100) -> pd.Series:
         return float(slope)
 
     return log_p.rolling(window).apply(_hurst, raw=True)
+
+
+# --------------------------------------------------------------------------- #
+# Grid levels
+# --------------------------------------------------------------------------- #
+def trailing_range(close: pd.Series, window: int = 8) -> pd.DataFrame:
+    """Centre and width of the range over the last ``window`` bars, up to and
+    including bar t. This is what the grid uses for its levels.
+
+    The labeller also reports a centre and width, but those describe the
+    *next* H bars: they're the answer the classifier is trying to predict.
+    Placing the grid with them would tell the strategy exactly where future
+    prices will be, so the grid must only ever use this trailing range.
+    """
+    centre = close.rolling(window).mean()
+    width = close.rolling(window).max() - close.rolling(window).min()
+    return pd.DataFrame({"range_centre": centre, "range_width_pct": width / centre})
 
 
 # --------------------------------------------------------------------------- #

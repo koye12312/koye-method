@@ -3,18 +3,17 @@ from pathlib import Path
 
 import pandas as pd
 
+from core.config import HORIZON, TICKER
 from core.data_fetcher import DATA_DIR, load_hourly
 from core.performance import plot_regime_timeline
 from core.regime_labeller import LabelConfig, label_regimes
-
-TICKER = "TSLA"
 
 if __name__ == "__main__":
     print(f"Loading {TICKER} hourly bars...")
     df = load_hourly(TICKER)
     print(f"  Loaded {len(df):,} bars from {df.index.min()} to {df.index.max()}\n")
 
-    cfg = LabelConfig(horizon=8, switch_threshold=0.20, min_width_pct=0.005)
+    cfg = LabelConfig(horizon=HORIZON, switch_threshold=0.20, min_width_pct=0.005)
     print(f"Labelling regimes with config: {cfg}")
     labels = label_regimes(df["Close"], cfg=cfg)
 

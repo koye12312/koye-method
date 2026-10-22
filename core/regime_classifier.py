@@ -1,7 +1,9 @@
 """Train a Random Forest to predict whether the next H bars are range-bound.
 
 Uses TimeSeriesSplit (NOT k-fold) so that every train fold is strictly
-in the past relative to its test fold. Reports precision, recall and F1
+in the past relative to its test fold, with a gap of H bars between them:
+each label looks H bars ahead, so without the gap the last training labels
+would describe prices inside the test fold (López de Prado's "purging"). Reports precision, recall and F1
 on the minority class instead of accuracy, because regime labels are
 imbalanced (range-bound bars are rarer than trending bars).
 """
@@ -66,12 +68,17 @@ def cross_validate(
     X: pd.DataFrame,
     y: pd.Series,
     n_splits: int = 5,
+    gap: int = 8,
     n_estimators: int = 200,
     max_depth: int = 8,
     random_state: int = 42,
 ) -> TrainResult:
-    """Run TimeSeriesSplit CV on a Random Forest classifier."""
-    tscv = TimeSeriesSplit(n_splits=n_splits)
+    """Run purged TimeSeriesSplit CV on a Random Forest classifier.
+
+    ``X`` and ``y`` should contain training data only. The final model is
+    fitted on all of ``X``, so passing hold-out rows here would leak them.
+    """
+    tscv = TimeSeriesSplit(n_splits=n_splits, gap=gap)
     fold_results: List[CVResult] = []
 
     for fold, (train_idx, test_idx) in enumerate(tscv.split(X), start=1):
@@ -109,7 +116,7 @@ def cross_validate(
             f"support+={fold_results[-1].support_pos}"
         )
 
-    # Final model trained on all the data.
+    # Final model trained on everything passed in (the training period only).
     final_clf = RandomForestClassifier(
         n_estimators=n_estimators,
         max_depth=max_depth,
