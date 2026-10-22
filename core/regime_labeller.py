@@ -15,8 +15,9 @@ through the window:
 The "switch rate" = number_of_switches / (window_length - 1) is then
 thresholded to produce a binary label.
 
-We also compute the *centre* and *width* of the predicted range, which
-the grid strategy uses later as its trade levels.
+We also record the *centre* and *width* of that future range for analysis.
+These describe the future, so they must never be used to place trades;
+the grid uses ``features.trailing_range`` (past bars only) instead.
 """
 from __future__ import annotations
 

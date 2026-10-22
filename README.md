@@ -1,5 +1,7 @@
 # The Method
 
+[![Tests](https://github.com/koye12312/koye-method/actions/workflows/tests.yml/badge.svg)](https://github.com/koye12312/koye-method/actions/workflows/tests.yml)
+
 An ML-gated mean-reversion grid trader for high-volatility equities.
 
 The system has two stages: an **unsupervised regime labeller** uses K-means
@@ -8,7 +10,7 @@ trending, and a **Random Forest classifier** learns to predict the regime of
 the *next* eight hours from causal features (volatility, autocorrelation,
 ADX, Hurst exponent, …). When the classifier is confident the next window
 will be range-bound, the system deploys a grid of mean-reversion trades
-inside the predicted range, with a hard stop on regime breakdown.
+around the recent trading range, with a hard stop on regime breakdown.
 
 The classifier is evaluated with `TimeSeriesSplit` cross-validation to
 prevent any look-ahead bias. The strategy is benchmarked against both
@@ -50,18 +52,21 @@ koye-method/
 ├── 02_label_regimes.py        # entry: cluster + label every window
 ├── 03_train_classifier.py     # entry: train RF with TimeSeriesSplit
 ├── 04_run_backtest.py         # entry: backtest all three strategies
+├── random_walk_check.py       # leak check on random-walk prices (offline)
 │
 ├── core/
 │   ├── __init__.py
 │   ├── data_fetcher.py        # yfinance hourly downloader + loader
 │   ├── features.py            # 9 causal features (vol, ADX, Hurst, …)
 │   ├── regime_labeller.py     # K-means switch-rate labelling
-│   ├── regime_classifier.py   # Random Forest + TimeSeriesSplit + plots
+│   ├── config.py              # ticker, horizon and the train/test split
+│   ├── regime_classifier.py   # Random Forest + purged TimeSeriesSplit + plots
 │   ├── grid_strategy.py       # grid execution with stops
 │   └── performance.py         # metrics + comparison plots
 │
 ├── data/                      # (generated, gitignored) CSVs
 ├── models/                    # (generated, gitignored) pickled RF
+├── tests/                     # pytest suite: causality, split, metrics, grid
 ├── reports/                   # (generated, kept) all PNG outputs
 └── notebooks/                 # space for ad-hoc analysis
 ```
@@ -73,7 +78,7 @@ koye-method/
 Requires Python 3.10+.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/koye12312/koye-method.git
 cd koye-method
 
 python -m venv .venv
@@ -122,9 +127,10 @@ many times the cluster assignment switches:
 
 The switch rate is `switches / (H - 1)`. A window is labelled range-bound
 if its switch rate exceeds 0.20 *and* its width is at least 0.5% of price
-(to filter out degenerate near-flat windows). The labeller also outputs
-the centre and width of the predicted range, which the grid strategy
-uses later as its trade levels.
+(to filter out degenerate near-flat windows). The labeller also records
+the centre and width of that future range, for analysis only: because it
+describes the *next* H bars, using it to place trades would leak the
+future into the backtest (see [Validation](#validation)).
 
 This is a deliberate, principled use of K-means: clustering is being used
 to discover a structural property of price evolution (oscillation vs
@@ -144,7 +150,7 @@ Nine features, each computed only from data up to and including time `t`:
 | `autocorr_24` | 24 bars | Lag-1 autocorrelation of returns |
 | `skew_48` | 48 bars | Return distribution skew |
 | `kurt_48` | 48 bars | Return distribution kurtosis |
-| `hurst_100` | 100 bars | Hurst exponent via R/S analysis |
+| `hurst_100` | 100 bars | Hurst exponent (variance-scaling estimator) |
 
 The Hurst exponent deserves a note: `H < 0.5` indicates mean-reversion,
 `H > 0.5` indicates trending. It is the most theoretically grounded
@@ -157,12 +163,17 @@ range-vs-trend feature in the set.
 - **`class_weight="balanced"`** handles the natural imbalance — range-bound
   windows are typically rarer than trending ones, and naive accuracy-based
   training would just predict "trending" everywhere.
-- **`TimeSeriesSplit(n_splits=5)`** is used in place of standard k-fold.
+- **`TimeSeriesSplit(n_splits=5, gap=8)`** is used in place of standard k-fold.
   This is non-negotiable for time-series data: every train fold must be
   strictly in the past relative to its test fold. Standard `KFold` with
   `shuffle=True` would let the model learn from the future to predict
   the past, which is the same look-ahead bias that invalidates most
-  amateur backtests.
+  amateur backtests. The `gap` purges 8 bars between folds, because each
+  label looks 8 bars ahead and would otherwise overlap the test fold.
+- **The model only ever sees the training period.** Cross-validation and
+  the final fit both use the first 70% of bars (minus an 8-bar purge);
+  the last 30% is reserved for the backtest. The split is defined once in
+  `core/config.py`.
 - **Reported metrics are precision, recall, and F1 on the minority class.**
   Accuracy is deliberately not the headline number — see your data
   analysis module's class imbalance lecture for why.
@@ -172,7 +183,8 @@ range-vs-trend feature in the set.
 When the classifier predicts P(range-bound) ≥ 0.55 for the next window,
 the strategy:
 
-1. Computes the predicted range centre and width from the labeller.
+1. Computes the range centre and width from the **last** H bars
+   (`features.trailing_range`), using only prices already seen.
 2. Places `N = 5` evenly-spaced limit orders between
    `centre − width/2` and `centre + width/2`.
 3. Sets a hard stop at `centre ± 1.5 × (width / 2)`. If the price breaks
@@ -198,8 +210,9 @@ Three strategies are compared on the held-out final 30% of the data:
 3. **Koye Method** — ML-gated grid, deployed only when the classifier
    predicts a range-bound regime.
 
-Performance is reported in CAGR, Sharpe, Sortino, and Max Drawdown,
-all annualised assuming 252 × 6.5 = 1,638 hourly periods per year.
+Performance is reported in CAGR, Sharpe, Sortino, and Max Drawdown.
+CAGR uses calendar time; Sharpe and Sortino are annualised using the
+number of bars per year measured from the data itself.
 
 ---
 
@@ -219,9 +232,34 @@ TSLA data. As a rough guide for what to expect when running on real data:
   on real TSLA data, *something is wrong*. Recheck the look-ahead
   guarantees in the labeller and the feature builder before celebrating.
 
-The plots in `reports/` shipped with this repo were produced from a
-synthetic test dataset (Yahoo Finance was unreachable from the build
-environment). Numbers from your own run on real TSLA data will differ.
+Running the pipeline writes its charts to `reports/`.
+
+---
+
+## Validation
+
+An earlier version of the backtest placed the grid using the labeller's
+range, which is computed from the *next* 8 bars, and trained the final model
+on data that included the test period. Both leak future information.
+
+To measure the effect, `random_walk_check.py` runs the whole pipeline on
+random-walk prices, where no strategy can have a genuine edge:
+
+| Strategy | With the leaks | After the fixes (mean of 10 random walks) |
+|---|---|---|
+| Always-on grid | +28% to +42% on every series tried | −4.1% (trading costs) |
+| Koye Method | +12% to +19% on every series tried | −0.5% |
+| Classifier F1 | — | 49%, matching the 50% positive rate (no skill, as expected) |
+
+The tests in `tests/` keep it that way: they rewrite every price after a
+given bar and check that features, grid levels and the equity curve up to
+that bar don't change, and that no training label overlaps the hold-out.
+
+```bash
+pip install pytest
+pytest                      # 16 tests
+python random_walk_check.py # the table above, no internet needed
+```
 
 ---
 
